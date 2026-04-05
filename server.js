@@ -1,126 +1,30 @@
-const COMPANY_DATA = require('./company-data');
-
 const express = require("express");
 const cors = require("cors");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "";
 
 app.use(cors());
 app.use(express.json());
 
-const KNOWLEDGE_BASE = [
-  {
-    keywords: ["momentum"],
-    answer: `Le momentum mesure la force du mouvement actuel d’une action.
-
-Quand une action a un momentum élevé, cela veut dire qu’elle est en train de bouger fortement sur le marché, souvent à la hausse ou à la baisse.
-
-En trading, le momentum sert surtout à voir si un mouvement paraît puissant ou en train de s’essouffler.`
-  },
-  {
-    keywords: ["volatilité", "volatilite", "volatile"],
-    answer: `La volatilité mesure l’amplitude des variations du prix d’une action.
-
-Une action très volatile peut monter ou descendre rapidement. Cela peut offrir des opportunités, mais cela augmente aussi le risque.
-
-Une action peu volatile est souvent plus stable et plus facile à tenir psychologiquement.`
-  },
-  {
-    keywords: ["p/e", "pe", "price earnings", "price-to-earnings"],
-    answer: `Le P/E compare le prix de l’action aux bénéfices de l’entreprise.
-
-Il sert à estimer si le marché paie cher ou non les résultats de l’entreprise.
-
-En général, un P/E élevé peut signaler une action très valorisée.`
-  },
-  {
-    keywords: ["eps", "bénéfice par action", "benefice par action"],
-    answer: `L’EPS signifie bénéfice par action.
-
-Il indique combien l’entreprise gagne pour chaque action existante.
-
-Plus l’EPS est élevé, plus la rentabilité ressort bien dans une lecture fondamentale simple.`
-  },
-  {
-    keywords: ["optimiste"],
-    answer: `Le scénario optimiste est le scénario le plus favorable dans une projection.
-
-Il représente une hypothèse où les conditions restent bonnes et où l’action évolue dans le bon sens.
-
-Ce n’est donc pas une certitude.`
-  },
-  {
-    keywords: ["prudent"],
-    answer: `Le scénario prudent est le scénario le plus défensif.
-
-Il sert à imaginer ce qui pourrait se passer si le marché évolue moins bien que prévu, ou si le dossier devient plus fragile.
-
-C’est une hypothèse conservatrice.`
-  },
-  {
-    keywords: ["neutre"],
-    answer: `Le scénario neutre est le scénario central.
-
-Il ne suppose ni forte accélération, ni forte dégradation.
-
-C’est souvent l’hypothèse la plus équilibrée.`
-  },
-  {
-    keywords: ["support"],
-    answer: `Un support est une zone de prix où une action a tendance à moins baisser, car des acheteurs peuvent revenir.
-
-Ce n’est pas une barrière magique, mais plutôt un niveau surveillé par le marché.`
-  },
-  {
-    keywords: ["résistance", "resistance"],
-    answer: `Une résistance est une zone de prix où une action a tendance à avoir plus de mal à monter.
-
-Souvent, des vendeurs ou des prises de bénéfices apparaissent autour de ce niveau.`
-  },
-  {
-    keywords: ["rsi"],
-    answer: `Le RSI est un indicateur technique qui mesure la vitesse et l’intensité des mouvements de prix.
-
-Il est souvent utilisé pour repérer si une action semble trop montée ou trop baissée à court terme.`
-  },
-  {
-    keywords: ["dividende"],
-    answer: `Un dividende est une partie des bénéfices versée aux actionnaires.
-
-C’est une forme de revenu régulier pour l’investisseur.`
-  },
-  {
-    keywords: ["croissance"],
-    answer: `Une action de croissance est une entreprise qui augmente fortement ses revenus et ses bénéfices.
-
-Elle réinvestit souvent ses profits au lieu de verser des dividendes.`
-  },
-  {
-    keywords: ["marché", "marche"],
-    answer: `Le marché représente l’ensemble des échanges d’actions.
-
-Il est influencé par l’économie, les taux d’intérêt et la confiance des investisseurs.`
-  },
-  {
-    keywords: ["variation"],
-    answer: `La variation correspond à l’évolution du prix d’une action sur une période donnée.
-
-Sur une séance, elle indique combien le titre a monté ou baissé en valeur et en pourcentage.`
-  },
-  {
-    keywords: ["volume"],
-    answer: `Le volume correspond au nombre d’actions échangées pendant une période donnée.
-
-Un volume élevé montre généralement qu’il y a beaucoup d’activité sur le titre.`
-  },
-  {
-    keywords: ["capitalisation", "market cap"],
-    answer: `La capitalisation boursière correspond à la valeur totale de l’entreprise en bourse.
-
-Elle se calcule en gros avec le prix de l’action multiplié par le nombre d’actions existantes.`
-  }
-];
+const COMPANY_SYMBOLS = {
+  apple: "AAPL",
+  amazon: "AMZN",
+  google: "GOOGL",
+  alphabet: "GOOGL",
+  meta: "META",
+  facebook: "META",
+  nvidia: "NVDA",
+  tesla: "TSLA",
+  microsoft: "MSFT",
+  aapl: "AAPL",
+  amzn: "AMZN",
+  googl: "GOOGL",
+  nvda: "NVDA",
+  tsla: "TSLA",
+  msft: "MSFT"
+};
 
 function normalizeText(text) {
   return String(text || "")
@@ -130,175 +34,268 @@ function normalizeText(text) {
     .trim();
 }
 
-function detectIntent(message) {
+function extractSymbolFromMessage(message) {
   const text = normalizeText(message);
 
-  if (
-    text.includes("quoi") ||
-    text.includes("cest quoi") ||
-    text.includes("que veut dire") ||
-    text.includes("definition") ||
-    text.includes("explique") ||
-    text.includes("signifie")
-  ) {
-    return "definition";
-  }
-
-  if (text.includes("acheter") || text.includes("investir")) {
-    return "buy";
-  }
-
-  if (text.includes("vendre")) {
-    return "sell";
-  }
-
-  if (text.includes("risque")) {
-    return "risk";
-  }
-
-  if (text.includes("compar")) {
-    return "compare";
-  }
-
-  return "general";
-}
-
-function findKnowledgeAnswer(message) {
-  const text = normalizeText(message);
-
-  for (const item of KNOWLEDGE_BASE) {
-    for (const keyword of item.keywords) {
-      if (text.includes(normalizeText(keyword))) {
-        return item.answer;
-      }
+  for (const key of Object.keys(COMPANY_SYMBOLS)) {
+    if (text.includes(key)) {
+      return COMPANY_SYMBOLS[key];
     }
   }
 
   return null;
 }
 
-function enrichAnswer(baseAnswer, intent, sourceLabel = "base locale") {
-  if (!baseAnswer) return null;
+function localDefinitionAnswer(message) {
+  const text = normalizeText(message);
 
-  let summary = "";
-  let conclusion = "";
+  const defs = [
+    {
+      keys: ["momentum"],
+      answer: `Le momentum mesure la force du mouvement actuel d’une action.
 
-  if (intent === "definition") {
-    summary = "C’est une notion utile pour mieux comprendre le trading et lire une action.";
-    conclusion = "C’est un bon point de départ avant de passer à une vraie analyse.";
-  } else if (intent === "buy") {
-    summary = "Cette notion peut t’aider à repérer un meilleur contexte d’achat.";
-    conclusion = "Avant d’acheter, il faut toujours croiser qualité, valorisation et risque.";
-  } else if (intent === "sell") {
-    summary = "Cette notion peut aussi aider à voir quand il faut être plus prudent.";
-    conclusion = "Une vente se décide mieux quand on comprend le contexte, pas juste l’émotion.";
-  } else if (intent === "risk") {
-    summary = "Le risque dépend à la fois du marché, de l’entreprise et du comportement du titre.";
-    conclusion = "Plus le risque est élevé, plus il faut adapter la taille de position et la prudence.";
-  } else {
-    summary = "La réponse doit toujours être lue dans le bon contexte de marché.";
-    conclusion = "Une notion seule ne suffit pas : il faut la relier à une analyse globale.";
+Conclusion :
+plus le momentum est élevé, plus le mouvement du titre paraît puissant.`
+    },
+    {
+      keys: ["variation"],
+      answer: `La variation indique de combien une action a monté ou baissé sur une période donnée, souvent la séance du jour.
+
+Conclusion :
+elle permet de voir rapidement si le marché est positif ou négatif sur le titre.`
+    },
+    {
+      keys: ["volatilite", "volatile"],
+      answer: `La volatilité mesure à quel point le prix d’une action bouge fortement.
+
+Conclusion :
+plus la volatilité est élevée, plus l’action est nerveuse.`
+    },
+    {
+      keys: ["rsi"],
+      answer: `Le RSI est un indicateur technique utilisé pour voir si un titre semble trop monté ou trop baissé à court terme.
+
+Conclusion :
+c’est un outil de lecture, pas une vérité absolue.`
+    },
+    {
+      keys: ["support"],
+      answer: `Un support est une zone de prix où une action peut avoir tendance à moins baisser.
+
+Conclusion :
+c’est un niveau surveillé par beaucoup d’investisseurs.`
+    },
+    {
+      keys: ["resistance"],
+      answer: `Une résistance est une zone de prix où une action a tendance à avoir plus de mal à monter.
+
+Conclusion :
+c’est souvent une zone de frein pour la hausse.`
+    },
+    {
+      keys: ["dividende"],
+      answer: `Un dividende est une partie des bénéfices versée aux actionnaires.
+
+Conclusion :
+une action à dividende peut générer un revenu régulier.`
+    }
+  ];
+
+  for (const item of defs) {
+    if (item.keys.some(key => text.includes(key))) {
+      return item.answer;
+    }
   }
 
-  return `Bonne question.
-
-${baseAnswer}
-
-👉 Ce qu’il faut retenir :
-${summary}
-
-👉 Source :
-${sourceLabel}
-
-👉 Conclusion :
-${conclusion}`;
+  return null;
 }
 
-async function searchWikipediaTitle(query) {
-  const url =
-    `https://fr.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=1&namespace=0&format=json&origin=*`;
-
-  const res = await fetch(url);
-  if (!res.ok) return null;
-
-  const data = await res.json();
-  if (!Array.isArray(data) || !Array.isArray(data[1]) || !data[1].length) {
-    return null;
+async function alphaVantageQuery(params) {
+  if (!ALPHA_VANTAGE_API_KEY) {
+    throw new Error("Clé Alpha Vantage manquante.");
   }
 
-  return data[1][0];
-}
+  const url = new URL("https://www.alphavantage.co/query");
 
-async function getWikipediaSummary(title) {
-  const url =
-    `https://fr.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+  Object.entries({
+    ...params,
+    apikey: ALPHA_VANTAGE_API_KEY
+  }).forEach(([key, value]) => {
+    url.searchParams.set(key, value);
+  });
 
-  const res = await fetch(url, {
+  const response = await fetch(url.toString(), {
     headers: {
       "User-Agent": "TradeEverythingAI/1.0"
     }
   });
 
-  if (!res.ok) return null;
+  const data = await response.json();
 
-  const data = await res.json();
-  if (!data.extract) return null;
-
-  return {
-    title: data.title || title,
-    extract: data.extract,
-    content_urls: data.content_urls || null
-  };
-}
-
-async function buildWebAnswer(message) {
-  const cleaned = String(message || "").trim();
-  if (!cleaned) return null;
-
-  const title = await searchWikipediaTitle(cleaned);
-  if (!title) return null;
-
-  const summary = await getWikipediaSummary(title);
-  if (!summary) return null;
-
-  return {
-    source: "web_search",
-    answer: enrichAnswer(summary.extract, detectIntent(message), `recherche web documentaire : ${summary.title}`)
-  };
-}
-
-async function buildStructuredFallback(message) {
-  const intent = detectIntent(message);
-  const localAnswer = findKnowledgeAnswer(message);
-
-  if (localAnswer) {
-    return {
-      source: "knowledge_base",
-      answer: enrichAnswer(localAnswer, intent, "base locale trading")
-    };
+  if (!response.ok) {
+    throw new Error("Erreur réseau Alpha Vantage.");
   }
 
-  const webAnswer = await buildWebAnswer(message);
-  if (webAnswer) {
-    return webAnswer;
+  if (data["Error Message"]) {
+    throw new Error(data["Error Message"]);
+  }
+
+  if (data["Information"]) {
+    throw new Error(data["Information"]);
+  }
+
+  return data;
+}
+
+async function getQuote(symbol) {
+  const data = await alphaVantageQuery({
+    function: "GLOBAL_QUOTE",
+    symbol
+  });
+
+  const quote = data["Global Quote"];
+
+  if (!quote || !quote["01. symbol"]) {
+    throw new Error(`Quote introuvable pour ${symbol}.`);
   }
 
   return {
-    source: "ai_generated",
-    answer: `Je n’ai pas trouvé de réponse assez fiable pour cette question.
-
-👉 Ce que j’ai compris :
-Tu poses une question liée au trading, à l’investissement ou à une notion financière.
-
-👉 Ce que tu peux faire :
-- reformuler avec un mot plus précis
-- demander une définition
-- demander une analyse d’action
-- comparer deux actions
-
-👉 Conclusion :
-Pose-moi par exemple une question comme “c’est quoi le RSI ?”, “explique la variation”, ou “compare Apple et Nvidia”.`
+    symbol: quote["01. symbol"],
+    price: Number(quote["05. price"]),
+    change: Number(quote["09. change"]),
+    changePercent: Number(String(quote["10. change percent"]).replace("%", "")),
+    volume: Number(quote["06. volume"])
   };
+}
+
+async function getSMA(symbol) {
+  const data = await alphaVantageQuery({
+    function: "SMA",
+    symbol,
+    interval: "daily",
+    time_period: "20",
+    series_type: "close"
+  });
+
+  const block = data["Technical Analysis: SMA"];
+  if (!block) {
+    return null;
+  }
+
+  const firstDate = Object.keys(block)[0];
+  if (!firstDate) {
+    return null;
+  }
+
+  return Number(block[firstDate]["SMA"]);
+}
+
+async function getNews(symbol) {
+  const data = await alphaVantageQuery({
+    function: "NEWS_SENTIMENT",
+    tickers: symbol,
+    limit: "3"
+  });
+
+  const feed = Array.isArray(data.feed) ? data.feed : [];
+
+  return feed.slice(0, 3).map(item => ({
+    title: item.title,
+    source: item.source,
+    sentimentLabel: item.overall_sentiment_label || "non précisé",
+    sentimentScore: Number(item.overall_sentiment_score || 0)
+  }));
+}
+
+function computeAIScore(quote, sma, news) {
+  let score = 50;
+
+  if (quote.changePercent > 1.5) score += 10;
+  if (quote.changePercent < -1.5) score -= 10;
+
+  if (sma !== null) {
+    if (quote.price > sma) score += 12;
+    if (quote.price < sma) score -= 12;
+  }
+
+  const validSentiments = news
+    .map(n => n.sentimentScore)
+    .filter(n => !Number.isNaN(n));
+
+  const avgSentiment = validSentiments.length
+    ? validSentiments.reduce((a, b) => a + b, 0) / validSentiments.length
+    : 0;
+
+  if (avgSentiment > 0.15) score += 12;
+  if (avgSentiment < -0.15) score -= 12;
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  return {
+    score,
+    avgSentiment
+  };
+}
+
+function detectOpportunity(score) {
+  if (score >= 75) return "Acheter / surveiller fortement";
+  if (score >= 60) return "Surveiller à l’achat";
+  if (score >= 45) return "Attendre";
+  if (score >= 30) return "Surveiller à la baisse";
+  return "Éviter ou alléger";
+}
+
+function buildPrediction(quote, sma, score) {
+  if (sma !== null && quote.price > sma && score >= 65) {
+    return "Scénario probable : biais haussier modéré tant que le prix reste au-dessus de la moyenne mobile.";
+  }
+
+  if (sma !== null && quote.price < sma && score <= 40) {
+    return "Scénario probable : biais baissier ou fragile tant que le prix reste sous la moyenne mobile.";
+  }
+
+  return "Scénario probable : phase d’hésitation, sans avantage directionnel très net pour le moment.";
+}
+
+function formatNews(news) {
+  if (!news.length) {
+    return "Aucune news exploitable trouvée pour l’instant.";
+  }
+
+  return news.map((item, index) => {
+    return `- News ${index + 1} : ${item.title} (${item.source}) — sentiment ${item.sentimentLabel}`;
+  }).join("\n");
+}
+
+function buildStockAnswer(symbol, quote, sma, news) {
+  const { score, avgSentiment } = computeAIScore(quote, sma, news);
+  const opportunity = detectOpportunity(score);
+  const prediction = buildPrediction(quote, sma, score);
+
+  return `Bonne question.
+
+Analyse temps réel sur ${symbol} :
+
+👉 Données boursières
+- Prix actuel : ${quote.price.toFixed(2)} $
+- Variation : ${quote.change >= 0 ? "+" : ""}${quote.change.toFixed(2)} $ (${quote.changePercent >= 0 ? "+" : ""}${quote.changePercent.toFixed(2)}%)
+- Volume : ${quote.volume.toLocaleString("fr-FR")}
+- SMA 20 jours : ${sma !== null ? sma.toFixed(2) + " $" : "indisponible"}
+
+👉 News récentes
+${formatNews(news)}
+
+👉 Lecture IA
+- Prix vs SMA20 : ${sma !== null ? (quote.price > sma ? "au-dessus" : "en dessous") : "indisponible"}
+- Sentiment moyen news : ${avgSentiment.toFixed(2)}
+- Score IA : ${score}/100
+- Opportunité détectée : ${opportunity}
+
+👉 Projection
+${prediction}
+
+👉 Conclusion
+Cette réponse s’appuie sur des données de marché réelles et des news récentes, mais ce n’est pas une certitude absolue.`;
 }
 
 app.post("/ask-ai", async (req, res) => {
@@ -312,20 +309,51 @@ app.post("/ask-ai", async (req, res) => {
       });
     }
 
-    const result = await buildStructuredFallback(message);
+    const localAnswer = localDefinitionAnswer(message);
+    if (localAnswer) {
+      return res.json({
+        ok: true,
+        source: "knowledge_base",
+        answer: localAnswer
+      });
+    }
+
+    const symbol = extractSymbolFromMessage(message);
+
+    if (!symbol) {
+      return res.json({
+        ok: true,
+        source: "ai_generated",
+        answer: `Je peux mieux t’aider si tu me donnes une action précise.
+
+Exemples :
+- Analyse Apple
+- Analyse Nvidia
+- News Tesla
+- Opportunité Microsoft
+
+Conclusion :
+pour les vraies données boursières et les news, j’ai besoin d’un nom d’entreprise précis.`
+      });
+    }
+
+    const [quote, sma, news] = await Promise.all([
+      getQuote(symbol),
+      getSMA(symbol),
+      getNews(symbol)
+    ]);
 
     return res.json({
       ok: true,
-      mode: "documented_answer",
-      source: result.source,
-      answer: result.answer
+      source: "web_search",
+      answer: buildStockAnswer(symbol, quote, sma, news)
     });
   } catch (error) {
     console.error("Erreur /ask-ai :", error);
 
     return res.status(500).json({
       ok: false,
-      error: "Erreur interne du serveur."
+      error: error.message || "Erreur interne du serveur."
     });
   }
 });
