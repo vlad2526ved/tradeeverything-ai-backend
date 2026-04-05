@@ -1,3 +1,5 @@
+const COMPANY_DATA = require('./company-data');
+
 const express = require("express");
 const cors = require("cors");
 
