@@ -4,6 +4,7 @@ const cors = require("cors");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 
 app.use(cors());
 app.use(express.json());
@@ -36,129 +37,37 @@ function normalizeText(text) {
 
 function extractSymbolFromMessage(message) {
   const text = normalizeText(message);
-
   for (const key of Object.keys(COMPANY_SYMBOLS)) {
     if (text.includes(key)) {
       return COMPANY_SYMBOLS[key];
     }
   }
-
-  return null;
-}
-
-function localDefinitionAnswer(message) {
-  const text = normalizeText(message);
-
-  const defs = [
-    {
-      keys: ["momentum"],
-      answer: `Le momentum mesure la force du mouvement actuel d’une action.
-
-Conclusion :
-plus le momentum est élevé, plus le mouvement du titre paraît puissant.`
-    },
-    {
-      keys: ["variation"],
-      answer: `La variation indique de combien une action a monté ou baissé sur une période donnée, souvent la séance du jour.
-
-Conclusion :
-elle permet de voir rapidement si le marché est positif ou négatif sur le titre.`
-    },
-    {
-      keys: ["volatilite", "volatile"],
-      answer: `La volatilité mesure à quel point le prix d’une action bouge fortement.
-
-Conclusion :
-plus la volatilité est élevée, plus l’action est nerveuse.`
-    },
-    {
-      keys: ["rsi"],
-      answer: `Le RSI est un indicateur technique utilisé pour voir si un titre semble trop monté ou trop baissé à court terme.
-
-Conclusion :
-c’est un outil de lecture, pas une vérité absolue.`
-    },
-    {
-      keys: ["support"],
-      answer: `Un support est une zone de prix où une action peut avoir tendance à moins baisser.
-
-Conclusion :
-c’est un niveau surveillé par beaucoup d’investisseurs.`
-    },
-    {
-      keys: ["resistance"],
-      answer: `Une résistance est une zone de prix où une action a tendance à avoir plus de mal à monter.
-
-Conclusion :
-c’est souvent une zone de frein pour la hausse.`
-    },
-    {
-      keys: ["dividende"],
-      answer: `Un dividende est une partie des bénéfices versée aux actionnaires.
-
-Conclusion :
-une action à dividende peut générer un revenu régulier.`
-    }
-  ];
-
-  for (const item of defs) {
-    if (item.keys.some(key => text.includes(key))) {
-      return item.answer;
-    }
-  }
-
   return null;
 }
 
 async function alphaVantageQuery(params) {
-  if (!ALPHA_VANTAGE_API_KEY) {
-    throw new Error("Clé Alpha Vantage manquante.");
-  }
+  if (!ALPHA_VANTAGE_API_KEY) throw new Error("Clé Alpha Vantage manquante.");
 
   const url = new URL("https://www.alphavantage.co/query");
-
-  Object.entries({
-    ...params,
-    apikey: ALPHA_VANTAGE_API_KEY
-  }).forEach(([key, value]) => {
-    url.searchParams.set(key, value);
+  Object.entries({ ...params, apikey: ALPHA_VANTAGE_API_KEY }).forEach(([k, v]) => {
+    url.searchParams.set(k, v);
   });
 
   const response = await fetch(url.toString(), {
-    headers: {
-      "User-Agent": "TradeEverythingAI/1.0"
-    }
+    headers: { "User-Agent": "TradeEverythingAI/1.0" }
   });
 
   const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error("Erreur réseau Alpha Vantage.");
-  }
-
-  if (data["Error Message"]) {
-    throw new Error(data["Error Message"]);
-  }
-
-  if (data["Information"]) {
-    throw new Error(data["Information"]);
-  }
-
+  if (!response.ok) throw new Error("Erreur réseau Alpha Vantage.");
+  if (data["Error Message"]) throw new Error(data["Error Message"]);
+  if (data["Information"]) throw new Error(data["Information"]);
   return data;
 }
 
 async function getQuote(symbol) {
-  const data = await alphaVantageQuery({
-    function: "GLOBAL_QUOTE",
-    symbol
-  });
-
+  const data = await alphaVantageQuery({ function: "GLOBAL_QUOTE", symbol });
   const quote = data["Global Quote"];
-
-  if (!quote || !quote["01. symbol"]) {
-    throw new Error(`Quote introuvable pour ${symbol}.`);
-  }
-
+  if (!quote || !quote["01. symbol"]) throw new Error(`Quote introuvable pour ${symbol}.`);
   return {
     symbol: quote["01. symbol"],
     price: Number(quote["05. price"]),
@@ -170,35 +79,20 @@ async function getQuote(symbol) {
 
 async function getSMA(symbol) {
   const data = await alphaVantageQuery({
-    function: "SMA",
-    symbol,
-    interval: "daily",
-    time_period: "20",
-    series_type: "close"
+    function: "SMA", symbol, interval: "daily", time_period: "20", series_type: "close"
   });
-
   const block = data["Technical Analysis: SMA"];
-  if (!block) {
-    return null;
-  }
-
+  if (!block) return null;
   const firstDate = Object.keys(block)[0];
-  if (!firstDate) {
-    return null;
-  }
-
+  if (!firstDate) return null;
   return Number(block[firstDate]["SMA"]);
 }
 
 async function getNews(symbol) {
   const data = await alphaVantageQuery({
-    function: "NEWS_SENTIMENT",
-    tickers: symbol,
-    limit: "3"
+    function: "NEWS_SENTIMENT", tickers: symbol, limit: "3"
   });
-
   const feed = Array.isArray(data.feed) ? data.feed : [];
-
   return feed.slice(0, 3).map(item => ({
     title: item.title,
     source: item.source,
@@ -207,154 +101,84 @@ async function getNews(symbol) {
   }));
 }
 
-function computeAIScore(quote, sma, news) {
-  let score = 50;
+// ✅ Réponse Claude pour toute question générale
+async function askClaude(userMessage, stockContext = null) {
+  if (!ANTHROPIC_API_KEY) throw new Error("Clé Anthropic manquante.");
 
-  if (quote.changePercent > 1.5) score += 10;
-  if (quote.changePercent < -1.5) score -= 10;
+  const systemPrompt = `Tu es un assistant boursier expert intégré dans une application de trading appelée TradeEverything.
+Tu réponds en français, de façon claire, directe et pédagogique.
+Tu peux répondre à des questions générales sur la bourse, les actions, les stratégies d'investissement, les indicateurs financiers, les actualités du marché, et les conseils pour débutants.
+Tes réponses doivent être concises (max 200 mots), bien structurées, et toujours se terminer par une "Conclusion :" en une phrase.
+Tu es bienveillant et encourageant avec les débutants.
+Ne dis jamais que tu ne peux pas répondre à une question de finance ou trading — essaie toujours d'apporter une réponse utile.`;
 
-  if (sma !== null) {
-    if (quote.price > sma) score += 12;
-    if (quote.price < sma) score -= 12;
-  }
+  const userContent = stockContext
+    ? `Voici les données de marché actuelles pour contexte :\n${stockContext}\n\nQuestion de l'utilisateur : ${userMessage}`
+    : userMessage;
 
-  const validSentiments = news
-    .map(n => n.sentimentScore)
-    .filter(n => !Number.isNaN(n));
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 512,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userContent }]
+    })
+  });
 
-  const avgSentiment = validSentiments.length
-    ? validSentiments.reduce((a, b) => a + b, 0) / validSentiments.length
-    : 0;
-
-  if (avgSentiment > 0.15) score += 12;
-  if (avgSentiment < -0.15) score -= 12;
-
-  score = Math.max(0, Math.min(100, Math.round(score)));
-
-  return {
-    score,
-    avgSentiment
-  };
-}
-
-function detectOpportunity(score) {
-  if (score >= 75) return "Acheter / surveiller fortement";
-  if (score >= 60) return "Surveiller à l’achat";
-  if (score >= 45) return "Attendre";
-  if (score >= 30) return "Surveiller à la baisse";
-  return "Éviter ou alléger";
-}
-
-function buildPrediction(quote, sma, score) {
-  if (sma !== null && quote.price > sma && score >= 65) {
-    return "Scénario probable : biais haussier modéré tant que le prix reste au-dessus de la moyenne mobile.";
-  }
-
-  if (sma !== null && quote.price < sma && score <= 40) {
-    return "Scénario probable : biais baissier ou fragile tant que le prix reste sous la moyenne mobile.";
-  }
-
-  return "Scénario probable : phase d’hésitation, sans avantage directionnel très net pour le moment.";
-}
-
-function formatNews(news) {
-  if (!news.length) {
-    return "Aucune news exploitable trouvée pour l’instant.";
-  }
-
-  return news.map((item, index) => {
-    return `- News ${index + 1} : ${item.title} (${item.source}) — sentiment ${item.sentimentLabel}`;
-  }).join("\n");
-}
-
-function buildStockAnswer(symbol, quote, sma, news) {
-  const { score, avgSentiment } = computeAIScore(quote, sma, news);
-  const opportunity = detectOpportunity(score);
-  const prediction = buildPrediction(quote, sma, score);
-
-  return `Bonne question.
-
-Analyse temps réel sur ${symbol} :
-
-👉 Données boursières
-- Prix actuel : ${quote.price.toFixed(2)} $
-- Variation : ${quote.change >= 0 ? "+" : ""}${quote.change.toFixed(2)} $ (${quote.changePercent >= 0 ? "+" : ""}${quote.changePercent.toFixed(2)}%)
-- Volume : ${quote.volume.toLocaleString("fr-FR")}
-- SMA 20 jours : ${sma !== null ? sma.toFixed(2) + " $" : "indisponible"}
-
-👉 News récentes
-${formatNews(news)}
-
-👉 Lecture IA
-- Prix vs SMA20 : ${sma !== null ? (quote.price > sma ? "au-dessus" : "en dessous") : "indisponible"}
-- Sentiment moyen news : ${avgSentiment.toFixed(2)}
-- Score IA : ${score}/100
-- Opportunité détectée : ${opportunity}
-
-👉 Projection
-${prediction}
-
-👉 Conclusion
-Cette réponse s’appuie sur des données de marché réelles et des news récentes, mais ce n’est pas une certitude absolue.`;
+  const data = await response.json();
+  if (!response.ok) throw new Error(data?.error?.message || "Erreur API Claude.");
+  return data.content[0].text;
 }
 
 app.post("/ask-ai", async (req, res) => {
   try {
     const { message } = req.body;
-
     if (!message || typeof message !== "string") {
-      return res.status(400).json({
-        ok: false,
-        error: "Message invalide."
-      });
-    }
-
-    const localAnswer = localDefinitionAnswer(message);
-    if (localAnswer) {
-      return res.json({
-        ok: true,
-        source: "knowledge_base",
-        answer: localAnswer
-      });
+      return res.status(400).json({ ok: false, error: "Message invalide." });
     }
 
     const symbol = extractSymbolFromMessage(message);
 
-    if (!symbol) {
-      return res.json({
-        ok: true,
-        source: "ai_generated",
-        answer: `Je peux mieux t’aider si tu me donnes une action précise.
+    // Si une action est mentionnée → données réelles + Claude
+    if (symbol) {
+      try {
+        const [quote, sma, news] = await Promise.all([
+          getQuote(symbol),
+          getSMA(symbol),
+          getNews(symbol)
+        ]);
 
-Exemples :
-- Analyse Apple
-- Analyse Nvidia
-- News Tesla
-- Opportunité Microsoft
+        const stockContext = `
+Symbole: ${symbol}
+Prix actuel: ${quote.price.toFixed(2)} $
+Variation: ${quote.change >= 0 ? "+" : ""}${quote.change.toFixed(2)} $ (${quote.changePercent.toFixed(2)}%)
+Volume: ${quote.volume.toLocaleString("fr-FR")}
+SMA 20 jours: ${sma !== null ? sma.toFixed(2) + " $" : "indisponible"}
+News récentes: ${news.map(n => `${n.title} (${n.sentimentLabel})`).join(" | ")}
+        `.trim();
 
-Conclusion :
-pour les vraies données boursières et les news, j’ai besoin d’un nom d’entreprise précis.`
-      });
+        const answer = await askClaude(message, stockContext);
+        return res.json({ ok: true, source: "web_search", answer });
+      } catch (stockError) {
+        // Si les données boursières échouent, Claude répond quand même
+        const answer = await askClaude(message);
+        return res.json({ ok: true, source: "ai_generated", answer });
+      }
     }
 
-    const [quote, sma, news] = await Promise.all([
-      getQuote(symbol),
-      getSMA(symbol),
-      getNews(symbol)
-    ]);
+    // Sinon → Claude répond directement
+    const answer = await askClaude(message);
+    return res.json({ ok: true, source: "ai_generated", answer });
 
-    return res.json({
-      ok: true,
-      source: "web_search",
-      answer: buildStockAnswer(symbol, quote, sma, news)
-    });
   } catch (error) {
     console.error("Erreur /ask-ai :", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: error.message || "Erreur interne du serveur."
-    });
+    return res.status(500).json({ ok: false, error: error.message || "Erreur interne." });
   }
 });
 
