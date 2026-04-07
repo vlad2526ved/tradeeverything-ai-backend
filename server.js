@@ -4,59 +4,80 @@ const cors = require("cors");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "";
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 
 app.use(cors());
 app.use(express.json());
 
+// ─── Mémoire utilisateur (par session) ───────────────────────────────────────
+const userMemory = {
+  portfolio: {},
+  favoriteStocks: [],
+  recentQuestions: [],
+  tradingStyle: "inconnu"
+};
+
 const COMPANY_SYMBOLS = {
-  apple: "AAPL",
-  amazon: "AMZN",
-  google: "GOOGL",
-  alphabet: "GOOGL",
-  meta: "META",
-  facebook: "META",
-  nvidia: "NVDA",
-  tesla: "TSLA",
-  microsoft: "MSFT",
-  aapl: "AAPL",
-  amzn: "AMZN",
-  googl: "GOOGL",
-  nvda: "NVDA",
-  tsla: "TSLA",
-  msft: "MSFT"
+  apple: "AAPL", amazon: "AMZN", google: "GOOGL", alphabet: "GOOGL",
+  meta: "META", facebook: "META", nvidia: "NVDA", tesla: "TSLA",
+  microsoft: "MSFT", aapl: "AAPL", amzn: "AMZN", googl: "GOOGL",
+  nvda: "NVDA", tsla: "TSLA", msft: "MSFT"
 };
 
 function normalizeText(text) {
-  return String(text || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim();
+  return String(text || "").toLowerCase().normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").trim();
 }
 
 function extractSymbolFromMessage(message) {
   const text = normalizeText(message);
   for (const key of Object.keys(COMPANY_SYMBOLS)) {
-    if (text.includes(key)) {
-      return COMPANY_SYMBOLS[key];
-    }
+    if (text.includes(key)) return COMPANY_SYMBOLS[key];
   }
   return null;
 }
 
+function updateMemory(message, symbol) {
+  userMemory.recentQuestions.push(message);
+  if (userMemory.recentQuestions.length > 10) userMemory.recentQuestions.shift();
+
+  if (symbol && !userMemory.favoriteStocks.includes(symbol)) {
+    const count = userMemory.recentQuestions.filter(q =>
+      normalizeText(q).includes(normalizeText(symbol))
+    ).length;
+    if (count >= 2) userMemory.favoriteStocks.push(symbol);
+  }
+
+  const text = normalizeText(message);
+  if (text.includes("achet") || text.includes("invest")) userMemory.tradingStyle = "acheteur actif";
+  if (text.includes("vend") || text.includes("profit")) userMemory.tradingStyle = "profit taker";
+  if (text.includes("risque") || text.includes("prudent")) userMemory.tradingStyle = "prudent";
+}
+
+function buildMemoryContext() {
+  const parts = [];
+  if (userMemory.favoriteStocks.length > 0) {
+    parts.push(`Actions favorites : ${userMemory.favoriteStocks.join(", ")}`);
+  }
+  if (userMemory.tradingStyle !== "inconnu") {
+    parts.push(`Style de trading : ${userMemory.tradingStyle}`);
+  }
+  if (userMemory.recentQuestions.length > 0) {
+    parts.push(`Questions récentes : ${userMemory.recentQuestions.slice(-3).join(" | ")}`);
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+// ─── Alpha Vantage ────────────────────────────────────────────────────────────
 async function alphaVantageQuery(params) {
   if (!ALPHA_VANTAGE_API_KEY) throw new Error("Clé Alpha Vantage manquante.");
-
   const url = new URL("https://www.alphavantage.co/query");
   Object.entries({ ...params, apikey: ALPHA_VANTAGE_API_KEY }).forEach(([k, v]) => {
     url.searchParams.set(k, v);
   });
-
   const response = await fetch(url.toString(), {
     headers: { "User-Agent": "TradeEverythingAI/1.0" }
   });
-
   const data = await response.json();
   if (!response.ok) throw new Error("Erreur réseau Alpha Vantage.");
   if (data["Error Message"]) throw new Error(data["Error Message"]);
@@ -84,8 +105,7 @@ async function getSMA(symbol) {
   const block = data["Technical Analysis: SMA"];
   if (!block) return null;
   const firstDate = Object.keys(block)[0];
-  if (!firstDate) return null;
-  return Number(block[firstDate]["SMA"]);
+  return firstDate ? Number(block[firstDate]["SMA"]) : null;
 }
 
 async function getNews(symbol) {
@@ -101,51 +121,64 @@ async function getNews(symbol) {
   }));
 }
 
-// ✅ Réponse Claude pour toute question générale
-async function askClaude(userMessage, stockContext = null) {
-  if (!ANTHROPIC_API_KEY) throw new Error("Clé Anthropic manquante.");
+// ─── Groq IA ──────────────────────────────────────────────────────────────────
+async function askGroq(userMessage, stockContext = null, memoryContext = null) {
+  if (!GROQ_API_KEY) throw new Error("Clé Groq manquante.");
 
-  const systemPrompt = `Tu es un assistant boursier expert intégré dans une application de trading appelée TradeEverything.
-Tu réponds en français, de façon claire, directe et pédagogique.
-Tu peux répondre à des questions générales sur la bourse, les actions, les stratégies d'investissement, les indicateurs financiers, les actualités du marché, et les conseils pour débutants.
-Tes réponses doivent être concises (max 200 mots), bien structurées, et toujours se terminer par une "Conclusion :" en une phrase.
-Tu es bienveillant et encourageant avec les débutants.
-Ne dis jamais que tu ne peux pas répondre à une question de finance ou trading — essaie toujours d'apporter une réponse utile.`;
+  const systemPrompt = `Tu es TradeAI, un assistant boursier expert et personnalisé intégré dans l'application TradeEverything.
+Tu réponds toujours en français, de façon claire, directe et pédagogique.
+Tu peux répondre à n'importe quelle question sur : la bourse, les actions, les stratégies d'investissement, les indicateurs financiers, l'économie, les cryptos, les ETF, les dividendes, la gestion de portefeuille, et les conseils pour débutants.
+Tu adaptes ton niveau d'explication selon le style de l'utilisateur.
+Tes réponses sont structurées, max 250 mots, et se terminent toujours par "Conclusion :" en une phrase.
+Tu es bienveillant, encourageant, et jamais condescendant.
+Tu ne refuses jamais de répondre à une question financière.`;
 
-  const userContent = stockContext
-    ? `Voici les données de marché actuelles pour contexte :\n${stockContext}\n\nQuestion de l'utilisateur : ${userMessage}`
+  const contextParts = [];
+  if (memoryContext) contextParts.push(`Profil utilisateur :\n${memoryContext}`);
+  if (stockContext) contextParts.push(`Données de marché en temps réel :\n${stockContext}`);
+
+  const fullMessage = contextParts.length > 0
+    ? `${contextParts.join("\n\n")}\n\nQuestion : ${userMessage}`
     : userMessage;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01"
+      "Authorization": `Bearer ${GROQ_API_KEY}`
     },
     body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
+      model: "llama-3.3-70b-versatile",
       max_tokens: 512,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userContent }]
+      temperature: 0.7,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: fullMessage }
+      ]
     })
   });
 
   const data = await response.json();
-  if (!response.ok) throw new Error(data?.error?.message || "Erreur API Claude.");
-  return data.content[0].text;
+  if (!response.ok) throw new Error(data?.error?.message || "Erreur API Groq.");
+  return data.choices[0].message.content;
 }
 
+// ─── Route principale ─────────────────────────────────────────────────────────
 app.post("/ask-ai", async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, portfolio } = req.body;
+
     if (!message || typeof message !== "string") {
       return res.status(400).json({ ok: false, error: "Message invalide." });
     }
 
     const symbol = extractSymbolFromMessage(message);
+    updateMemory(message, symbol);
 
-    // Si une action est mentionnée → données réelles + Claude
+    if (portfolio) userMemory.portfolio = portfolio;
+
+    const memoryContext = buildMemoryContext();
+
     if (symbol) {
       try {
         const [quote, sma, news] = await Promise.all([
@@ -160,20 +193,18 @@ Prix actuel: ${quote.price.toFixed(2)} $
 Variation: ${quote.change >= 0 ? "+" : ""}${quote.change.toFixed(2)} $ (${quote.changePercent.toFixed(2)}%)
 Volume: ${quote.volume.toLocaleString("fr-FR")}
 SMA 20 jours: ${sma !== null ? sma.toFixed(2) + " $" : "indisponible"}
-News récentes: ${news.map(n => `${n.title} (${n.sentimentLabel})`).join(" | ")}
+News: ${news.map(n => `${n.title} (${n.sentimentLabel})`).join(" | ")}
         `.trim();
 
-        const answer = await askClaude(message, stockContext);
+        const answer = await askGroq(message, stockContext, memoryContext);
         return res.json({ ok: true, source: "web_search", answer });
-      } catch (stockError) {
-        // Si les données boursières échouent, Claude répond quand même
-        const answer = await askClaude(message);
+      } catch {
+        const answer = await askGroq(message, null, memoryContext);
         return res.json({ ok: true, source: "ai_generated", answer });
       }
     }
 
-    // Sinon → Claude répond directement
-    const answer = await askClaude(message);
+    const answer = await askGroq(message, null, memoryContext);
     return res.json({ ok: true, source: "ai_generated", answer });
 
   } catch (error) {
@@ -183,9 +214,9 @@ News récentes: ${news.map(n => `${n.title} (${n.sentimentLabel})`).join(" | ")}
 });
 
 app.get("/", (req, res) => {
-  res.send("Backend IA TradeEverything actif.");
+  res.send("TradeAI backend actif 🚀");
 });
 
 app.listen(PORT, () => {
-  console.log(`Serveur IA lancé sur http://localhost:${PORT}`);
+  console.log(`Serveur TradeAI lancé sur http://localhost:${PORT}`);
 });
