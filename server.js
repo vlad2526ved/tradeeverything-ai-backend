@@ -5,7 +5,7 @@ const { answerQuestion } = require("./ai-backend-engine");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "";
-const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 
 app.use(cors());
 app.use(express.json());
@@ -122,9 +122,9 @@ async function getNews(symbol) {
   }));
 }
 
-// ─── Groq IA ──────────────────────────────────────────────────────────────────
-async function askGroq(userMessage, stockContext = null, memoryContext = null) {
-  if (!GROQ_API_KEY) throw new Error("Clé Groq manquante.");
+// ─── Anthropic IA ─────────────────────────────────────────────────────────────
+async function askAnthropic(userMessage, stockContext = null, memoryContext = null) {
+  if (!ANTHROPIC_API_KEY) throw new Error("Clé Anthropic manquante.");
 
   const systemPrompt = `Tu es TradeAI, un assistant boursier expert et personnalisé intégré dans l'application TradeEverything.
 Tu réponds toujours en français, de façon claire, directe et pédagogique.
@@ -138,30 +138,30 @@ Tu ne refuses jamais de répondre à une question financière.`;
   if (memoryContext) contextParts.push(`Profil utilisateur :\n${memoryContext}`);
   if (stockContext) contextParts.push(`Données de marché en temps réel :\n${stockContext}`);
 
-  const fullMessage = contextParts.length > 0
+  const userContent = contextParts.length > 0
     ? `${contextParts.join("\n\n")}\n\nQuestion : ${userMessage}`
     : userMessage;
 
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${GROQ_API_KEY}`
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01"
     },
     body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
+      model: "claude-sonnet-4-20250514",
       max_tokens: 512,
-      temperature: 0.7,
+      system: systemPrompt,
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: fullMessage }
+        { role: "user", content: userContent }
       ]
     })
   });
 
   const data = await response.json();
-  if (!response.ok) throw new Error(data?.error?.message || "Erreur API Groq.");
-  return data.choices[0].message.content;
+  if (!response.ok) throw new Error(data?.error?.message || "Erreur API Anthropic.");
+  return data.content[0].text;
 }
 
 // ─── Route principale ─────────────────────────────────────────────────────────
@@ -212,11 +212,11 @@ app.post("/ask-ai", async (req, res) => {
           return res.json({ ok: true, source: "knowledge_base", answer });
         }
       } catch (err) {
-        console.log("IA locale échouée, fallback Groq:", err.message);
+        console.log("IA locale échouée, fallback Anthropic:", err.message);
       }
     }
 
-    // ─── FALLBACK GROQ ────────────────────────────────────────────────────────
+    // ─── FALLBACK ANTHROPIC ───────────────────────────────────────────────────
     if (symbol) {
       try {
         const [quote, sma, news] = await Promise.all([
@@ -234,15 +234,15 @@ SMA 20 jours: ${sma !== null ? sma.toFixed(2) + " $" : "indisponible"}
 News: ${news.map(n => `${n.title} (${n.sentimentLabel})`).join(" | ")}
         `.trim();
 
-        const answer = await askGroq(message, stockContext, memoryContext);
+        const answer = await askAnthropic(message, stockContext, memoryContext);
         return res.json({ ok: true, source: "web_search", answer });
       } catch {
-        const answer = await askGroq(message, null, memoryContext);
+        const answer = await askAnthropic(message, null, memoryContext);
         return res.json({ ok: true, source: "ai_generated", answer });
       }
     }
 
-    const answer = await askGroq(message, null, memoryContext);
+    const answer = await askAnthropic(message, null, memoryContext);
     return res.json({ ok: true, source: "ai_generated", answer });
 
   } catch (error) {
